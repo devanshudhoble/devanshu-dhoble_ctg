@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-generate_report.py — Generate a clean, comprehensive 3-page report.pdf for the Janitri assignment.
+generate_report.py - Generate a clean, comprehensive 3-page report.pdf for the Janitri assignment.
 Strictly organized into the four required sections in exact order.
 """
 
@@ -47,7 +47,7 @@ class ReportPDF(FPDF):
     def bullet_item(self, title, desc):
         self.set_font("Helvetica", "B", 9.2)
         self.cell(4)
-        self.cell(4, 4.8, chr(149))
+        self.cell(4, 4.8, "-")
         self.cell(self.get_string_width(title) + 1, 4.8, title)
         self.set_font("Helvetica", "", 9.2)
         self.multi_cell(0, 4.8, f": {desc}")
@@ -71,7 +71,7 @@ def build_report(output_path="report.pdf"):
     pdf.cell(0, 8, "Machine Learning System for Intrapartum Fetal Distress Detection", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9.5)
     pdf.set_text_color(80, 80, 80)
-    pdf.cell(0, 5, "Candidate: Devanshu Dhoble  |  Target Role: AI/ML Engineer  |  Organization: Janitri", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, "Candidate: Devanshu Dhoble  |  Role: AI/ML Engineer  |  Organization: Janitri", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
     # =========================================================================
@@ -85,8 +85,8 @@ def build_report(output_path="report.pdf"):
         "maternal-fetal blood and oxygen exchange. A healthy fetus possesses physiological reserve and recovers between "
         "contractions. However, when oxygen delivery is persistently inadequate (due to cord compression, placental "
         "insufficiency, or hyperstimulation), the fetus transitions to anaerobic metabolism, leading to lactic acid "
-        "accumulation and progressive metabolic acidosis. Clinicians monitor Cardiotocography (CTG)—tracking Fetal Heart "
-        "Rate (FHR) and Uterine Contractions (UC) simultaneously—to identify early physiological signs of hypoxia."
+        "accumulation and progressive metabolic acidosis. Clinicians monitor Cardiotocography (CTG) - tracking Fetal Heart "
+        "Rate (FHR) and Uterine Contractions (UC) simultaneously - to identify early physiological signs of hypoxia."
     )
     pdf.body_p(
         "I framed this task as a supervised binary classification problem: given the continuous FHR and UC time-series "
@@ -135,7 +135,7 @@ def build_report(output_path="report.pdf"):
     pdf.bullet_item("Heart Rate Variability (HRV)", "Root Mean Square of Successive Differences (RMSSD), SDNN, Short-Term Variability (STV proxy over 1-min epochs), and Long-Term Variability (LTV proxy).")
     pdf.bullet_item("Decelerations & Accelerations", "Clinically defined deceleration count (FHR drop >= 15 bpm for >= 15s) and acceleration count relative to estimated baseline.")
     pdf.bullet_item("Signal Reliability", "FHR missing ratio (artefact/dropout fraction) to measure monitoring stability.")
-    pdf.bullet_item("Uterine Activity & Contraction Regularity", "UC mean, std, max amplitude, contraction frequency per minute, mean contraction interval, and interval standard deviation via peak prominence detection.")
+    pdf.bullet_item("Uterine Activity & Regularity", "UC mean, std, max amplitude, contraction frequency per minute, mean contraction interval, and interval standard deviation via peak prominence detection.")
     pdf.bullet_item("FHR-UC Coupling Dynamics", "Pearson cross-correlation between FHR and UC signals, and mean FHR during contractions vs. between contractions (quantifying late deceleration trends).")
 
     pdf.subsection_title("Model Architecture & Training Setup")
@@ -214,7 +214,7 @@ def build_report(output_path="report.pdf"):
     pdf.subsection_title("Concrete Engineering Roadmap (What I Would Try with More Time)")
     pdf.bullet_item("1. Dynamic Risk Trajectory & Sliding Windows", "Replace static single-window evaluation with continuous temporal risk tracking over consecutive 10-minute intervals.")
     pdf.bullet_item("2. Temporal Deep Learning Architectures", "Train 1D Convolutional Neural Networks (1D-CNN) paired with Bi-directional LSTMs directly on multi-channel raw FHR+UC signals to learn automated spatial-temporal representations.")
-    pdf.bullet_item("3. Clinically Calibrated Operating Thresholds & Platt Scaling", "Tune operational alert thresholds to achieve >= 80% recall (sensitivity), utilizing cost-sensitive learning matrices to penalize false negatives heavily.")
+    pdf.bullet_item("3. Clinically Calibrated Thresholds & Platt Scaling", "Tune operational alert thresholds to achieve >= 80% recall (sensitivity), utilizing cost-sensitive learning matrices to penalize false negatives heavily.")
     pdf.bullet_item("4. Explainable AI via SHAP", "Integrate TreeSHAP to display real-time feature attribution directly on the nurse's monitor (e.g., 'Warning: Risk elevated by 32% due to late decelerations').")
 
     pdf.output(output_path)
