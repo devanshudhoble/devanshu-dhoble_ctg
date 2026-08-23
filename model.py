@@ -1,9 +1,9 @@
 """
-model.py — Fetal Distress Detection Model
+model.py -- Fetal Distress Detection Model
 ==========================================
 
 This module defines a reusable, importable model for predicting fetal distress
-from cardiotocography (CTG) recordings. It wraps a scikit-learn
+from cardiotocography (CTG) recordings.  It wraps a scikit-learn
 RandomForestClassifier with standardised preprocessing (StandardScaler).
 
 Usage
@@ -31,6 +31,18 @@ Label definition
 A recording is labelled **distressed (1)** when:
     umbilical-cord pH < 7.20  OR  5-minute Apgar < 7
 Otherwise the label is **not distressed (0)**.
+
+Note on label composition (552-record CTU-CHB dataset):
+    163 records flagged by pH < 7.20 only
+     14 records flagged by both criteria
+      5 records flagged by Apgar5 < 7 only
+    ---
+    182 total distressed  (33.0%)
+    370 total normal      (67.0%)
+
+The pH arm dominates.  The lenient 7.20 threshold (vs. the stricter 7.05-7.10
+for severe acidosis) was chosen to produce a workable positive class on a
+modest dataset.  See report.pdf Section 1 for the full rationale.
 """
 
 from __future__ import annotations
@@ -48,11 +60,15 @@ from sklearn.preprocessing import StandardScaler
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SAMPLING_RATE = 4          # Hz  (CTU-CHB dataset)
-PH_THRESHOLD = 7.20       # umbilical-cord pH below this → distressed
-APGAR5_THRESHOLD = 7      # 5-min Apgar below this → distressed
-FHR_VALID_RANGE = (50, 250)   # bpm – values outside are artefact
-WINDOW_SECONDS = 30 * 60      # last 30 minutes of the recording
+SAMPLING_RATE = 4             # Hz  (CTU-CHB dataset)
+PH_THRESHOLD = 7.20          # umbilical-cord pH below this -> distressed
+APGAR5_THRESHOLD = 7         # 5-min Apgar below this -> distressed
+FHR_VALID_RANGE = (50, 250)  # bpm -- values outside are artefact
+WINDOW_SECONDS = 30 * 60     # last 30 minutes of the recording
+
+# Default decision threshold, selected on training folds to target ~80% recall.
+# At this threshold: Recall ~ 0.80, Precision ~ 0.48 on test set.
+DEFAULT_THRESHOLD = 0.28
 
 # ---------------------------------------------------------------------------
 # Feature extraction helpers
@@ -73,12 +89,40 @@ def _clean_uc(uc: np.ndarray) -> np.ndarray:
     return uc
 
 
-def _successive_diffs(arr: np.ndarray) -> np.ndarray:
-    """Return absolute successive differences, ignoring NaNs."""
-    valid = arr[~np.isnan(arr)]
-    if len(valid) < 2:
+def _successive_diffs_gap_aware(arr: np.ndarray,
+                                max_gap_samples: int = 4) -> np.ndarray:
+    """
+    Return absolute successive differences, masking gaps.
+
+    Unlike a naive approach that compacts valid values first (which would
+    treat a 10-minute dropout as a single "successive difference"), this
+    function differences in-place and only keeps differences where the
+    two samples are separated by at most ``max_gap_samples`` NaN positions.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Signal array (may contain NaN).
+    max_gap_samples : int
+        Maximum number of consecutive NaN samples allowed between two valid
+        values for their difference to count as a genuine beat-to-beat change.
+        Default 4 (= 1 second at 4 Hz).
+    """
+    n = len(arr)
+    diffs = []
+    last_valid_idx = -1
+    last_valid_val = np.nan
+    for i in range(n):
+        if not np.isnan(arr[i]):
+            if last_valid_idx >= 0:
+                gap = i - last_valid_idx - 1  # number of NaN samples between
+                if gap <= max_gap_samples:
+                    diffs.append(abs(arr[i] - last_valid_val))
+            last_valid_idx = i
+            last_valid_val = arr[i]
+    if len(diffs) == 0:
         return np.array([0.0])
-    return np.abs(np.diff(valid))
+    return np.array(diffs)
 
 
 def _count_decelerations(fhr: np.ndarray, baseline: float,
@@ -87,8 +131,8 @@ def _count_decelerations(fhr: np.ndarray, baseline: float,
     """
     Count the number of FHR decelerations.
 
-    A deceleration is defined as a drop of ≥ `threshold` bpm below the
-    baseline that lasts at least `min_duration_s` seconds.
+    A deceleration is defined as a drop of >= ``threshold`` bpm below the
+    baseline that lasts at least ``min_duration_s`` seconds.
     """
     if np.isnan(baseline):
         return 0
@@ -116,8 +160,8 @@ def _count_accelerations(fhr: np.ndarray, baseline: float,
     """
     Count the number of FHR accelerations.
 
-    An acceleration is defined as a rise of ≥ `threshold` bpm above the
-    baseline that lasts at least `min_duration_s` seconds.
+    An acceleration is defined as a rise of >= ``threshold`` bpm above the
+    baseline that lasts at least ``min_duration_s`` seconds.
     """
     if np.isnan(baseline):
         return 0
@@ -142,17 +186,30 @@ def _estimate_baseline(fhr: np.ndarray, window_min: float = 10.0) -> float:
     """
     Estimate the FHR baseline using a rolling median over a wide window.
 
-    Returns the median of the rolling-median series, which approximates the
-    stable baseline heart rate.
+    Computes a rolling median with a window of ``window_min`` minutes, then
+    returns the median of that rolling series.  This filters out transient
+    accelerations and decelerations to approximate the stable resting
+    heart rate.
+
+    Falls back to the global median if the signal is shorter than one window.
     """
     valid = fhr[~np.isnan(fhr)]
     if len(valid) < 2:
         return np.nan
     win = int(window_min * 60 * SAMPLING_RATE)
     if win > len(valid):
-        win = len(valid)
-    # Use a simple approach: median of the entire valid segment
-    return float(np.median(valid))
+        return float(np.median(valid))
+    # Compute rolling median over the valid (compacted) signal
+    n = len(valid)
+    half = win // 2
+    rolling_medians = []
+    for i in range(half, n - half, win // 4):  # step by quarter-window
+        lo = max(0, i - half)
+        hi = min(n, i + half)
+        rolling_medians.append(np.median(valid[lo:hi]))
+    if len(rolling_medians) == 0:
+        return float(np.median(valid))
+    return float(np.median(rolling_medians))
 
 
 def _detect_contractions(uc: np.ndarray, min_prominence: float = 5.0,
@@ -214,27 +271,30 @@ def extract_features(fhr_raw: np.ndarray, uc_raw: np.ndarray) -> np.ndarray:
     fhr_skew = float(_safe_skewness(valid_fhr))
     fhr_kurt = float(_safe_kurtosis(valid_fhr))
 
-    # ---- HRV metrics ----
-    sd = _successive_diffs(fhr)
-    rmssd = float(np.sqrt(np.mean(sd ** 2)))     # short-term variability
-    sdnn = fhr_std                               # long-term variability (same as std)
+    # ---- HRV metrics (gap-aware) ----
+    # F8 fix: difference in-place across gaps, not after compacting.
+    sd = _successive_diffs_gap_aware(fhr, max_gap_samples=4)
+    rmssd = float(np.sqrt(np.mean(sd ** 2)))
     mean_abs_diff = float(np.mean(sd))
     median_abs_diff = float(np.median(sd))
 
     # ---- Variability in segments (STV / LTV) ----
-    # Short-term variability: mean abs diff over 1-min epochs
     stv = _short_term_variability(fhr)
     ltv = _long_term_variability(fhr)
 
-    # ---- Baseline ----
+    # ---- Baseline (rolling median, not global median) ----
+    # F7 fix: _estimate_baseline now uses a proper rolling median,
+    # so baseline_fhr is no longer a duplicate of fhr_median.
     baseline = _estimate_baseline(fhr)
 
     # ---- Decelerations / Accelerations ----
     n_decelerations = _count_decelerations(fhr, baseline)
     n_accelerations = _count_accelerations(fhr, baseline)
 
-    # ---- Fraction of signal missing (artefact ratio) ----
+    # ---- Signal quality features ----
+    # F8 fix: add explicit signal-loss features as honest proxies.
     fhr_missing_ratio = float(np.isnan(fhr).sum()) / max(len(fhr), 1)
+    longest_gap_s = _longest_gap_seconds(fhr)
 
     # ---- UC statistics ----
     uc_mean = float(np.nanmean(uc)) if len(valid_uc) > 0 else 0.0
@@ -256,13 +316,16 @@ def extract_features(fhr_raw: np.ndarray, uc_raw: np.ndarray) -> np.ndarray:
         mean_contraction_interval = 0.0
         std_contraction_interval = 0.0
 
-    # ---- FHR–UC coupling ----
+    # ---- FHR-UC coupling ----
     fhr_uc_corr = _fhr_uc_correlation(fhr, uc)
 
-    # ---- FHR during contractions vs between ----
-    fhr_during_contraction, fhr_between_contractions = _fhr_around_contractions(
+    # ---- FHR around contractions (asymmetric pre/post windows) ----
+    # P1 fix: split into pre-peak and post-peak to distinguish early vs.
+    # late deceleration patterns, rather than using a symmetric window.
+    fhr_pre_contraction, fhr_post_contraction = _fhr_around_contractions(
         fhr, uc, peaks
     )
+    fhr_post_minus_pre = fhr_post_contraction - fhr_pre_contraction
 
     # ---- Assemble ----
     features = np.array([
@@ -276,15 +339,15 @@ def extract_features(fhr_raw: np.ndarray, uc_raw: np.ndarray) -> np.ndarray:
         fhr_skew,                   # 7
         fhr_kurt,                   # 8
         rmssd,                      # 9
-        sdnn,                       # 10
-        mean_abs_diff,              # 11
-        median_abs_diff,            # 12
-        stv,                        # 13
-        ltv,                        # 14
-        baseline,                   # 15
-        float(n_decelerations),     # 16
-        float(n_accelerations),     # 17
-        fhr_missing_ratio,          # 18
+        mean_abs_diff,              # 10
+        median_abs_diff,            # 11
+        stv,                        # 12
+        ltv,                        # 13
+        baseline,                   # 14
+        float(n_decelerations),     # 15
+        float(n_accelerations),     # 16
+        fhr_missing_ratio,          # 17
+        longest_gap_s,              # 18
         uc_mean,                    # 19
         uc_std,                     # 20
         uc_max,                     # 21
@@ -293,8 +356,9 @@ def extract_features(fhr_raw: np.ndarray, uc_raw: np.ndarray) -> np.ndarray:
         mean_contraction_interval,  # 24
         std_contraction_interval,   # 25
         fhr_uc_corr,                # 26
-        fhr_during_contraction,     # 27
-        fhr_between_contractions,   # 28
+        fhr_pre_contraction,        # 27
+        fhr_post_contraction,       # 28
+        fhr_post_minus_pre,         # 29
     ], dtype=np.float64)
 
     # Replace any remaining inf / nan with 0
@@ -315,7 +379,6 @@ def get_feature_names() -> list[str]:
         "fhr_skew",
         "fhr_kurtosis",
         "rmssd",
-        "sdnn",
         "mean_abs_diff",
         "median_abs_diff",
         "short_term_variability",
@@ -324,6 +387,7 @@ def get_feature_names() -> list[str]:
         "n_decelerations",
         "n_accelerations",
         "fhr_missing_ratio",
+        "longest_gap_s",
         "uc_mean",
         "uc_std",
         "uc_max",
@@ -332,8 +396,9 @@ def get_feature_names() -> list[str]:
         "mean_contraction_interval_s",
         "std_contraction_interval_s",
         "fhr_uc_correlation",
-        "fhr_during_contraction",
-        "fhr_between_contractions",
+        "fhr_pre_contraction",
+        "fhr_post_contraction",
+        "fhr_post_minus_pre",
     ]
 
 
@@ -366,12 +431,12 @@ def _short_term_variability(fhr: np.ndarray, epoch_s: float = 60.0) -> float:
     epoch_samples = int(epoch_s * SAMPLING_RATE)
     n = len(fhr)
     if n < epoch_samples:
-        sd = _successive_diffs(fhr)
+        sd = _successive_diffs_gap_aware(fhr)
         return float(np.mean(sd)) if len(sd) > 0 else 0.0
     stvs = []
     for start in range(0, n - epoch_samples + 1, epoch_samples):
         chunk = fhr[start:start + epoch_samples]
-        sd = _successive_diffs(chunk)
+        sd = _successive_diffs_gap_aware(chunk)
         if len(sd) > 0:
             stvs.append(float(np.mean(sd)))
     return float(np.mean(stvs)) if stvs else 0.0
@@ -393,6 +458,20 @@ def _long_term_variability(fhr: np.ndarray, epoch_s: float = 60.0) -> float:
     return float(np.std(medians)) if len(medians) > 1 else 0.0
 
 
+def _longest_gap_seconds(fhr: np.ndarray) -> float:
+    """Return the duration (in seconds) of the longest NaN gap in the FHR."""
+    longest = 0
+    current = 0
+    for v in fhr:
+        if np.isnan(v):
+            current += 1
+            if current > longest:
+                longest = current
+        else:
+            current = 0
+    return longest / SAMPLING_RATE
+
+
 def _fhr_uc_correlation(fhr: np.ndarray, uc: np.ndarray) -> float:
     """Pearson correlation between FHR and UC (NaN-safe)."""
     mask = ~(np.isnan(fhr) | np.isnan(uc))
@@ -406,31 +485,46 @@ def _fhr_uc_correlation(fhr: np.ndarray, uc: np.ndarray) -> float:
 
 def _fhr_around_contractions(
     fhr: np.ndarray, uc: np.ndarray, peaks: np.ndarray,
-    window_s: float = 30.0
+    pre_window_s: float = 30.0, post_window_s: float = 60.0
 ) -> tuple[float, float]:
     """
-    Mean FHR during contractions vs. between contractions.
+    Mean FHR in the pre-peak and post-peak windows around contractions.
 
-    Returns (mean_fhr_during, mean_fhr_between).
+    P1 fix: uses asymmetric windows to preserve early-vs-late deceleration
+    timing.  The pre-peak window captures the heart rate just before the
+    contraction peak; the post-peak window captures the period where late
+    decelerations would appear.
+
+    Returns (mean_fhr_pre_peak, mean_fhr_post_peak).
     """
     if len(peaks) == 0:
         valid = fhr[~np.isnan(fhr)]
         m = float(np.mean(valid)) if len(valid) > 0 else 0.0
         return m, m
 
-    half_win = int(window_s * SAMPLING_RATE)
-    during_mask = np.zeros(len(fhr), dtype=bool)
+    pre_samples = int(pre_window_s * SAMPLING_RATE)
+    post_samples = int(post_window_s * SAMPLING_RATE)
+
+    pre_vals = []
+    post_vals = []
     for pk in peaks:
-        lo = max(0, pk - half_win)
-        hi = min(len(fhr), pk + half_win)
-        during_mask[lo:hi] = True
+        # Pre-peak window
+        lo = max(0, pk - pre_samples)
+        pre_chunk = fhr[lo:pk]
+        valid = pre_chunk[~np.isnan(pre_chunk)]
+        if len(valid) > 0:
+            pre_vals.extend(valid.tolist())
 
-    fhr_during = fhr[during_mask & ~np.isnan(fhr)]
-    fhr_between = fhr[~during_mask & ~np.isnan(fhr)]
+        # Post-peak window
+        hi = min(len(fhr), pk + post_samples)
+        post_chunk = fhr[pk:hi]
+        valid = post_chunk[~np.isnan(post_chunk)]
+        if len(valid) > 0:
+            post_vals.extend(valid.tolist())
 
-    m_during = float(np.mean(fhr_during)) if len(fhr_during) > 0 else 0.0
-    m_between = float(np.mean(fhr_between)) if len(fhr_between) > 0 else 0.0
-    return m_during, m_between
+    m_pre = float(np.mean(pre_vals)) if pre_vals else 0.0
+    m_post = float(np.mean(post_vals)) if post_vals else 0.0
+    return m_pre, m_post
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +543,10 @@ class FetalDistressModel:
     n_estimators : int
         Number of trees in the forest.
     max_depth : int or None
-        Maximum tree depth.
+        Maximum tree depth.  Default 4 (shallow) to prevent memorising
+        the training set -- see report Section 2 and review finding F3.
+    min_samples_leaf : int
+        Minimum samples per leaf node.
     class_weight : str or dict or None
         Passed to ``RandomForestClassifier``.  Defaults to
         ``'balanced'`` to handle the class imbalance typical of this
@@ -461,7 +558,8 @@ class FetalDistressModel:
     def __init__(
         self,
         n_estimators: int = 300,
-        max_depth: Optional[int] = 12,
+        max_depth: Optional[int] = 4,
+        min_samples_leaf: int = 10,
         class_weight: str = "balanced",
         random_state: int = 42,
     ):
@@ -469,6 +567,7 @@ class FetalDistressModel:
         self.clf = RandomForestClassifier(
             n_estimators=n_estimators,
             max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
             class_weight=class_weight,
             random_state=random_state,
             n_jobs=-1,
@@ -484,7 +583,7 @@ class FetalDistressModel:
         Parameters
         ----------
         X : np.ndarray, shape (n_samples, n_features)
-        y : np.ndarray, shape (n_samples,)  — binary labels (0/1)
+        y : np.ndarray, shape (n_samples,)  -- binary labels (0/1)
         """
         X_scaled = self.scaler.fit_transform(X)
         self.clf.fit(X_scaled, y)
@@ -505,7 +604,8 @@ class FetalDistressModel:
         X_scaled = self.scaler.transform(X)
         return self.clf.predict_proba(X_scaled)[:, 1]
 
-    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+    def predict(self, X: np.ndarray,
+                threshold: float = DEFAULT_THRESHOLD) -> np.ndarray:
         """
         Return binary predictions (0 or 1).
 
@@ -513,6 +613,8 @@ class FetalDistressModel:
         ----------
         threshold : float
             Probability threshold above which the prediction is 1.
+            Default is 0.28, selected on training folds to target ~80%
+            recall (see F6 fix).
         """
         return (self.predict_proba(X) >= threshold).astype(int)
 

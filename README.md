@@ -1,14 +1,19 @@
-# CTG Fetal Distress Detection — Prototype
+# CTG Fetal Distress Detection -- Prototype
 
 > **Author:** Devanshu Dhoble  
-> **Assignment:** Janitri — Intrapartum CTG Analysis  
-> **Dataset:** [CTU-CHB Intrapartum Cardiotocography Database (PhysioNet)](https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/)
+> **Assignment:** Janitri -- Intrapartum CTG Analysis  
+> **Dataset:** [CTU-CHB Intrapartum Cardiotocography Database (PhysioNet)](https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/)  
+> **Environment:** scikit-learn==1.6.1, scipy==1.15.2, numpy==2.2.1 (pinned for reproducibility)
 
 ---
 
 ## Overview
 
-This repository contains a working prototype for detecting **fetal distress / hypoxia** during labour using cardiotocography (CTG) recordings. The system extracts hand-crafted clinical features from the fetal heart rate (FHR) and uterine contraction (UC) signals and classifies each recording as *distressed* or *not distressed* using a **Random Forest** classifier with balanced class weights.
+A working prototype for detecting **fetal distress / hypoxia** during labour using
+cardiotocography (CTG) recordings. The system extracts 30 hand-crafted clinical
+features from the fetal heart rate (FHR) and uterine contraction (UC) signals and
+classifies each recording as *distressed* or *not distressed* using a **Random Forest**
+classifier with balanced class weights.
 
 ### Label Definition
 
@@ -18,15 +23,20 @@ A recording is labelled **distressed (1)** when either:
 
 Otherwise the label is **not distressed (0)**.
 
+**Note:** The pH arm dominates (163 of 182 positive labels). The 7.20 threshold
+represents mild acidemia (not severe acidosis at 7.05-7.10) and was chosen to
+produce a workable 33% positive class on 552 records. BDecf was available as
+an alternative label source but was not used. See report.pdf Section 1.
+
 ---
 
 ## Repository Structure
 
 ```
 devanshu-dhoble-ctg/
-├── README.md               # Setup, instructions, and documentation
-├── workflow.ipynb          # End-to-end runnable notebook (data -> train -> evaluate)
-├── model.py                # Importable model module (feature extraction + RF wrapper)
+├── README.md               # This file
+├── workflow.ipynb          # End-to-end runnable notebook
+├── model.py                # Importable model module (30 features + RF wrapper)
 ├── generate_outcomes.py    # Standalone inference script
 ├── artifacts/              # Saved model weights, scaler, and processed datasets
 │   ├── model.pkl
@@ -34,8 +44,8 @@ devanshu-dhoble-ctg/
 │   ├── train_data.npz
 │   ├── test_data.npz
 │   └── sample_inference.npz
-├── report.pdf              # 2-3 page technical write-up
-└── requirements.txt        # Python dependencies
+├── report.pdf              # 3-page technical write-up (4 sections)
+└── requirements.txt        # Pinned Python dependencies
 ```
 
 ---
@@ -45,8 +55,8 @@ devanshu-dhoble-ctg/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/devanshudhoble/CTG_REPO.git
-cd CTG_REPO
+git clone https://github.com/devanshudhoble/devanshu-dhoble_ctg.git
+cd devanshu-dhoble_ctg
 ```
 
 ### 2. Create and activate a virtual environment
@@ -59,7 +69,7 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-### 3. Install dependencies
+### 3. Install dependencies (pinned versions)
 
 ```bash
 pip install -r requirements.txt
@@ -67,13 +77,14 @@ pip install -r requirements.txt
 
 ### 4. Dataset
 
-Download the CTU-CHB database from [PhysioNet](https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/) and extract it. Set `DATA_DIR` in `workflow.ipynb` or define the `CTG_DATA_DIR` environment variable to point to the extracted folder containing the `.dat` and `.hea` files.
+Download the CTU-CHB database from [PhysioNet](https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/)
+and extract it. Either:
+- Set the `CTG_DATA_DIR` environment variable to the extracted folder, or
+- Edit `DATA_DIR` in `workflow.ipynb` directly.
 
 ---
 
 ## Running the Workflow
-
-Open the notebook and run all cells:
 
 ```bash
 jupyter notebook workflow.ipynb
@@ -81,12 +92,14 @@ jupyter notebook workflow.ipynb
 
 The notebook will:
 1. Load and parse all 552 recordings and their clinical outcomes.
-2. Define the distress label based on pH < 7.20 and 5-min Apgar < 7.
-3. Extract 29 hand-crafted time-domain features per recording from the last 30 minutes.
-4. Split into 80 / 20 train / test sets (stratified).
-5. Train a `RandomForestClassifier` (300 trees, depth 12, balanced class weights).
-6. Evaluate on the held-out test set (ROC-AUC: 0.733, Specificity: 0.878, Accuracy: 0.703).
-7. Save the trained model and processed data to `artifacts/`.
+2. Define the distress label and decompose it by source (pH vs Apgar).
+3. Extract 30 hand-crafted features per recording from the last 30 minutes.
+4. **Compare against baselines** (DummyClassifier, single-feature LogReg) via cross-validation.
+5. Split into 80/20 train/test sets (stratified).
+6. Train a `RandomForestClassifier` (300 trees, depth 4, balanced class weights).
+7. **Select the decision threshold** on training folds for ~80% recall.
+8. Evaluate on the held-out test set.
+9. Save the trained model and all artifacts.
 
 ---
 
@@ -94,32 +107,29 @@ The notebook will:
 
 ### Input Specification
 
-The inference script accepts two input modes:
-
-**Mode 1 — Raw WFDB record:**
+**Mode 1 -- Raw WFDB record:**
 ```bash
 python generate_outcomes.py --record path/to/1001
 ```
-- **Input**: Path to a `.dat`/`.hea` record pair without file extension (e.g. `data/1001`).
-- **Shape**: Continuous 4 Hz time-series signal arrays for FHR (bpm) and UC (amplitude).
+Input: path to a `.dat`/`.hea` record pair (base name, no extension).
 
-**Mode 2 — Pre-extracted features:**
+**Mode 2 -- Pre-extracted features:**
 ```bash
 python generate_outcomes.py --features artifacts/sample_inference.npz
 ```
-- **Input**: Path to a `.npz` file containing a key `X`.
-- **Shape**: 2D NumPy array of shape `(n_samples, 29)` representing the 29 engineered clinical features.
+Input: `.npz` file with key `X` of shape `(n_samples, 30)`.
 
 ### Output Specification
 
-For each recording, the script produces:
-
 | Output Field | Type | Description |
 |---|---|---|
-| **Distress Probability** | `float` (0.00 – 1.00) | Model's estimated likelihood of fetal distress / hypoxia |
-| **Predicted Label** | `int` (`0` or `1`) | `0` = Not Distressed (Normal), `1` = Distressed |
+| Distress Probability | float (0-1) | Model's estimated likelihood of fetal distress |
+| Predicted Label | int (0 or 1) | 0 = Normal, 1 = Distressed |
 
-### Quick Demo Run
+**Decision threshold:** 0.28 (selected on training folds for ~80% recall).
+Override with `--threshold`.
+
+### Quick Demo
 
 ```bash
 python generate_outcomes.py --features artifacts/sample_inference.npz
@@ -127,40 +137,46 @@ python generate_outcomes.py --features artifacts/sample_inference.npz
 
 ---
 
-## Evaluation Results (Held-Out Test Set: 111 Recordings)
+## Evaluation Results
 
-| Metric | Score | Clinical Interpretation |
-|---|---|---|
-| **ROC-AUC** | **0.7330** | Threshold-independent discrimination ability |
-| **Accuracy** | **0.7027** | Overall correct classification rate |
-| **Specificity** | **0.8784** | High rate of correctly identifying healthy fetuses (minimizes false alarms) |
-| **Precision** | **0.5909** | 59% of positive alerts are true distressed cases |
-| **Recall (Sensitivity)**| **0.3514** | Primary area for improvement via threshold tuning |
-| **F1-Score** | **0.4407** | Harmonic mean of precision and recall |
+### Cross-Validated Performance (authoritative)
+
+| Metric | Value |
+|---|---|
+| **CV ROC-AUC (5-fold x 6 repeats)** | **0.74 +/- 0.05** |
+| DummyClassifier baseline | 0.50 +/- 0.04 |
+| LogReg on fhr_iqr alone | 0.73 +/- 0.05 |
+
+### Test Set Performance (single 80/20 split, threshold = 0.28)
+
+| Metric | Value |
+|---|---|
+| Test ROC-AUC | ~0.73 |
+| Recall | ~0.80 |
+| Specificity | ~0.67 |
+
+*Note: exact test-set metrics depend on the random split and are reported to
+two decimal places to reflect the uncertainty inherent in 111 test samples.*
+
+### Performance Ceiling Finding
+
+Summary statistics over a 30-minute window saturate near 0.73-0.75 ROC-AUC on
+this dataset. The full 30-feature model does not dramatically outperform a single
+feature (`fhr_iqr`). Beating this ceiling likely requires temporal models on the
+raw signal (1D-CNN, LSTM), not more feature engineering.
 
 ---
 
-## Google Drive — Shared Data
+## Google Drive -- Shared Data
 
 **Link:** [https://drive.google.com/drive/folders/1RQgg69oA3lRZnJsTvtDJX_RQTleik1tt?usp=drive_link](https://drive.google.com/drive/folders/1RQgg69oA3lRZnJsTvtDJX_RQTleik1tt?usp=drive_link)
 
-The shared Google Drive folder contains:
-- `train_data.npz` — Preprocessed training set ready for modeling.
-- `test_data.npz` — Preprocessed test set ready for evaluation.
-- `sample_inference.npz` — 5-sample example input for `generate_outcomes.py`.
-- `model.pkl` — Trained Random Forest model weights.
-- `scaler.pkl` — Fitted StandardScaler normalization statistics.
+The shared folder contains:
+- `train_data.npz` -- Preprocessed training set (features + labels)
+- `test_data.npz` -- Preprocessed test set (features + labels)
+- `sample_inference.npz` -- 5-sample example input for `generate_outcomes.py`
+- `model.pkl` -- Trained Random Forest model weights
 
-*View access has been granted to:*
+*View access granted to:*
 - `shrut.dalwadi@janitri.in`
 - `ganesh.kavi@janitri.in`
-
----
-
-## Report
-
-See [`report.pdf`](report.pdf) for the comprehensive 3-page write-up covering:
-1. **How I framed it** — clinical problem formulation and label definition rationale.
-2. **What I built and how I checked it** — data cleaning, feature engineering, model architecture, and metric analysis.
-3. **Clinical utility and inference** — bedside deployment scenario, alarm policies, and workflow design.
-4. **Limits and next steps** — honest appraisal of failure modes, low recall risks, and concrete engineering roadmap.

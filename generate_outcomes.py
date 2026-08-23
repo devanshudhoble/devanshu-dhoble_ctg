@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-generate_outcomes.py — Standalone inference script for fetal distress prediction
+generate_outcomes.py -- Standalone inference script for fetal distress prediction
 ================================================================================
 
 This script loads a trained FetalDistressModel from the ``artifacts/`` folder
@@ -18,8 +18,8 @@ One of two modes:
 
   2. **Pre-processed .npz feature file**:
        python generate_outcomes.py --features path/to/features.npz
-     The .npz file must contain a key ``X`` of shape ``(n_samples, 29)``
-     (the 29-dimensional feature vector produced by ``model.extract_features``).
+     The .npz file must contain a key ``X`` of shape ``(n_samples, 30)``
+     (the 30-dimensional feature vector produced by ``model.extract_features``).
 
 OUTPUT
 ------
@@ -29,16 +29,19 @@ For each input recording the script prints:
     --------- | -------------------- | ---------------
     1001      | 0.73                 | 1 (distressed)
 
-- **Distress Probability** (float, 0–1): the model's estimated likelihood
+- **Distress Probability** (float, 0-1): the model's estimated likelihood
   that the fetus is experiencing distress / hypoxia.
 - **Predicted Label** (int, 0 or 1):
-    - ``0`` = not distressed (pH ≥ 7.20 and Apgar5 ≥ 7 expected)
+    - ``0`` = not distressed (pH >= 7.20 and Apgar5 >= 7 expected)
     - ``1`` = distressed     (pH < 7.20 or Apgar5 < 7 expected)
+
+Decision threshold: 0.28 (selected on training folds for ~80% recall).
+Can be overridden via --threshold.
 
 ARTIFACTS REQUIRED
 ------------------
-  artifacts/model.pkl   — trained RandomForestClassifier
-  artifacts/scaler.pkl  — fitted StandardScaler
+  artifacts/model.pkl   -- trained RandomForestClassifier
+  artifacts/scaler.pkl  -- fitted StandardScaler
 """
 
 from __future__ import annotations
@@ -52,7 +55,7 @@ import numpy as np
 # Ensure project root is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from model import FetalDistressModel, extract_features
+from model import FetalDistressModel, extract_features, DEFAULT_THRESHOLD
 
 
 def load_wfdb_record(record_path: str):
@@ -98,15 +101,15 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Probability threshold for the binary decision (default: 0.5).",
+        default=DEFAULT_THRESHOLD,
+        help=f"Probability threshold for the binary decision (default: {DEFAULT_THRESHOLD}).",
     )
     args = parser.parse_args()
 
     # ---- Load model ----
     print(f"Loading model from: {args.artifacts}")
     mdl = FetalDistressModel.load(args.artifacts)
-    print("Model loaded successfully.\n")
+    print(f"Model loaded successfully.  Decision threshold: {args.threshold}\n")
 
     # ---- Predict ----
     if args.features:
